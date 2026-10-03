@@ -1,0 +1,11 @@
+[package]
+name = "lsmith"
+version = "0.1.0"
+edition = "2024"
+authors = ["Risuleia"]
+description = "Zero-dependency LSM-tree based embedded key-value store"
+license = "MIT OR APACHE-2.0"
+repository = "https://github.com/Risuleia/lsmith"
+homepage = "https://github.com/Risuleia/lsmith"
+
+[dependencies]
