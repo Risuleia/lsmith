@@ -14,3 +14,5 @@ mod snapshot;
 mod sstable;
 mod version;
 mod wal;
+
+pub use error::{Error, Result};
