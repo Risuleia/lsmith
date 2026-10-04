@@ -12,6 +12,7 @@ mod options;
 mod sequence;
 mod snapshot;
 mod sstable;
+mod types;
 mod version;
 mod wal;
 
