@@ -1,15 +1,19 @@
-use crate::{collections::SkipList, types::{InternalKey, RecordKind}};
+use crate::{
+    collections::SkipList,
+    types::{InternalKey, RecordKind},
+    wal::WalRecord,
+};
 
 pub struct MemTable {
     table: SkipList<InternalKey, Vec<u8>>,
-    approximate_size: usize
+    approximate_size: usize,
 }
 
 impl MemTable {
     pub fn new() -> Self {
         Self { table: SkipList::new(), approximate_size: 0 }
     }
-    
+
     pub fn len(&self) -> usize {
         self.table.len()
     }
@@ -49,12 +53,19 @@ impl MemTable {
 
         match internal_key.kind {
             RecordKind::Put => Some(value.as_slice()),
-            RecordKind::Delete => None
+            RecordKind::Delete => None,
         }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&InternalKey, &Vec<u8>)> {
         self.table.iter()
+    }
+
+    pub fn apply(&mut self, record: WalRecord) {
+        match record.kind {
+            RecordKind::Put => self.put(record.key, record.value, record.sequence),
+            RecordKind::Delete => self.delete(record.key, record.sequence),
+        }
     }
 }
 
@@ -75,10 +86,7 @@ mod tests {
         memtable.put(b"name".to_vec(), b"Alice".to_vec(), 1);
         memtable.put(b"name".to_vec(), b"Bob".to_vec(), 2);
 
-        assert_eq!(
-            memtable.get(b"name", 2),
-            Some(b"Bob".as_slice())
-        );
+        assert_eq!(memtable.get(b"name", 2), Some(b"Bob".as_slice()));
     }
 
     #[test]
@@ -89,20 +97,11 @@ mod tests {
         memtable.put(b"name".to_vec(), b"Bob".to_vec(), 2);
         memtable.put(b"name".to_vec(), b"Charlie".to_vec(), 3);
 
-        assert_eq!(
-            memtable.get(b"name", 3),
-            Some(b"Charlie".as_slice())
-        );
+        assert_eq!(memtable.get(b"name", 3), Some(b"Charlie".as_slice()));
 
-        assert_eq!(
-            memtable.get(b"name", 2),
-            Some(b"Bob".as_slice())
-        );
+        assert_eq!(memtable.get(b"name", 2), Some(b"Bob".as_slice()));
 
-        assert_eq!(
-            memtable.get(b"name", 1),
-            Some(b"Alice".as_slice())
-        );
+        assert_eq!(memtable.get(b"name", 1), Some(b"Alice".as_slice()));
     }
 
     #[test]
@@ -131,10 +130,7 @@ mod tests {
         memtable.put(b"name".to_vec(), b"Alice".to_vec(), 1);
         memtable.delete(b"name".to_vec(), 2);
 
-        assert_eq!(
-            memtable.get(b"name", 1),
-            Some(b"Alice".as_slice())
-        );
+        assert_eq!(memtable.get(b"name", 1), Some(b"Alice".as_slice()));
 
         assert_eq!(memtable.get(b"name", 2), None);
     }
@@ -146,10 +142,7 @@ mod tests {
         memtable.put(b"name".to_vec(), b"Alice".to_vec(), 10);
         memtable.delete(b"name".to_vec(), 20);
 
-        assert_eq!(
-            memtable.get(b"name", 19),
-            Some(b"Alice".as_slice())
-        );
+        assert_eq!(memtable.get(b"name", 19), Some(b"Alice".as_slice()));
 
         assert_eq!(memtable.get(b"name", 20), None);
         assert_eq!(memtable.get(b"name", 100), None);
@@ -164,10 +157,7 @@ mod tests {
         memtable.delete(b"a".to_vec(), 3);
 
         assert_eq!(memtable.get(b"a", 3), None);
-        assert_eq!(
-            memtable.get(b"b", 3),
-            Some(b"two".as_slice())
-        );
+        assert_eq!(memtable.get(b"b", 3), Some(b"two".as_slice()));
     }
 
     #[test]
@@ -178,15 +168,9 @@ mod tests {
         memtable.put(b"key".to_vec(), b"v2".to_vec(), 20);
         memtable.put(b"key".to_vec(), b"v3".to_vec(), 30);
 
-        assert_eq!(
-            memtable.get(b"key", 15),
-            Some(b"v1".as_slice())
-        );
+        assert_eq!(memtable.get(b"key", 15), Some(b"v1".as_slice()));
 
-        assert_eq!(
-            memtable.get(b"key", 25),
-            Some(b"v2".as_slice())
-        );
+        assert_eq!(memtable.get(b"key", 25), Some(b"v2".as_slice()));
     }
 
     #[test]
@@ -195,10 +179,7 @@ mod tests {
 
         memtable.put(b"key".to_vec(), Vec::new(), 1);
 
-        assert_eq!(
-            memtable.get(b"key", 1),
-            Some(&[] as &[u8])
-        );
+        assert_eq!(memtable.get(b"key", 1), Some(&[] as &[u8]));
 
         assert_eq!(memtable.get(b"missing", 1), None);
     }
@@ -227,5 +208,51 @@ mod tests {
 
         assert_eq!(entries[3].0.user_key, b"b");
         assert_eq!(entries[3].0.sequence, 1);
+    }
+
+    #[test]
+    fn apply_put_record() {
+        let mut memtable = MemTable::new();
+
+        let record = WalRecord::put(1, b"hello".to_vec(), b"world".to_vec());
+
+        memtable.apply(record);
+
+        assert_eq!(memtable.get(b"hello", 1), Some(b"world".as_slice()));
+    }
+
+    #[test]
+    fn apply_delete_record() {
+        let mut memtable = MemTable::new();
+
+        memtable.put(b"hello".to_vec(), b"world".to_vec(), 1);
+
+        memtable.apply(WalRecord::delete(2, b"hello".to_vec()));
+
+        assert_eq!(memtable.get(b"hello", 2), None);
+    }
+
+    #[test]
+    fn replay_records_reconstructs_memtable() {
+        let records = vec![
+            WalRecord::put(1, b"name".to_vec(), b"Alice".to_vec()),
+            WalRecord::put(2, b"city".to_vec(), b"Chennai".to_vec()),
+            WalRecord::put(3, b"name".to_vec(), b"Bob".to_vec()),
+            WalRecord::delete(4, b"city".to_vec()),
+        ];
+
+        let mut memtable = MemTable::new();
+
+        for record in records {
+            memtable.apply(record);
+        }
+
+        assert_eq!(memtable.get(b"name", 4), Some(b"Bob".as_slice()));
+
+        assert_eq!(memtable.get(b"city", 4), None);
+
+        assert_eq!(memtable.get(b"name", 2), Some(b"Alice".as_slice()));
+
+        assert_eq!(memtable.get(b"city", 2), Some(b"Chennai".as_slice()));
     }
 }
